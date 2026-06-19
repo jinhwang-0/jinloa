@@ -408,10 +408,13 @@ def command_market():
 
 운명의 파괴석: {format_gold(prices.get("운명의 파괴석"))}
 운명의 파괴석 결정: {format_gold(prices.get("운명의 파괴석 결정"))}
+
 운명의 수호석: {format_gold(prices.get("운명의 수호석"))}
 운명의 수호석 결정: {format_gold(prices.get("운명의 수호석 결정"))}
+
 운명의 돌파석: {format_gold(prices.get("운명의 돌파석"))}
 위대한 운명의 돌파석: {format_gold(prices.get("위대한 운명의 돌파석"))}
+
 아비도스 융화 재료: {format_gold(prices.get("아비도스 융화 재료"))}
 상급 아비도스 융화 재료: {format_gold(prices.get("상급 아비도스 융화 재료"))}
 
@@ -420,6 +423,7 @@ def command_market():
 
 용암의 숨결: {format_gold(prices.get("용암의 숨결"))}
 빙하의 숨결: {format_gold(prices.get("빙하의 숨결"))}
+
 에스더의 기운: {format_gold(prices.get("에스더의 기운"))}"""
 
 
