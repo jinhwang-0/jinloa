@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from typing import Optional
 
 load_dotenv()
 
@@ -16,10 +17,12 @@ LOA_BASE = "https://developer-lostark.game.onstove.com"
 
 CACHE_SECONDS = 60
 market_cache = {}
+market_options_cache = {"time": 0, "data": None}
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: Optional[str] = None
+    msg: Optional[str] = None
 
 
 def loa_headers():
@@ -119,55 +122,115 @@ def get_gem_lowest_price(item_name: str):
     }
 
 
-def get_market_price(item_name: str):
+def get_market_options():
     now = time.time()
 
-    if item_name in market_cache:
-        cached_time, cached_value = market_cache[item_name]
-        if now - cached_time < CACHE_SECONDS:
-            return cached_value
-
-    url = f"{LOA_BASE}/markets/items"
-
-    payload = {
-        "Sort": "GRADE",
-        "CategoryCode": 0,
-        "ItemName": item_name,
-        "PageNo": 1,
-        "SortCondition": "ASC"
-    }
+    if market_options_cache["data"] and now - market_options_cache["time"] < 3600:
+        return market_options_cache["data"]
 
     try:
-        res = requests.post(url, headers=loa_headers(), json=payload, timeout=10)
+        res = requests.get(f"{LOA_BASE}/markets/options", headers=loa_headers(), timeout=10)
         res.raise_for_status()
-
         data = res.json()
-        items = data.get("Items", [])
 
-        if not items:
-            market_cache[item_name] = (now, None)
-            return None
+        market_options_cache["time"] = now
+        market_options_cache["data"] = data
 
-        exact_item = None
+        return data
 
-        for item in items:
-            if item.get("Name") == item_name:
-                exact_item = item
-                break
-
-        target = exact_item or items[0]
-        price = target.get("CurrentMinPrice")
-
-        market_cache[item_name] = (now, price)
-        return price
-
-    except Exception:
-        market_cache[item_name] = (now, None)
+    except Exception as e:
+        print("[MARKET OPTIONS ERROR]", str(e))
         return None
 
 
+def find_market_category_codes(keyword: str):
+    options = get_market_options()
+    codes = []
+
+    if not options:
+        return codes
+
+    categories = options.get("Categories", [])
+
+    for category in categories:
+        name = category.get("CodeName", "")
+        code = category.get("Code")
+
+        if keyword in name and code:
+            codes.append(code)
+
+        for sub in category.get("Subs", []):
+            sub_name = sub.get("CodeName", "")
+            sub_code = sub.get("Code")
+
+            if keyword in sub_name and sub_code:
+                codes.append(sub_code)
+
+    return codes
+
+
+def get_market_price(item_name: str, category_keyword: str = ""):
+    cache_key = f"{category_keyword}:{item_name}"
+    now = time.time()
+
+    if cache_key in market_cache:
+        cached_time, cached_value = market_cache[cache_key]
+        if now - cached_time < CACHE_SECONDS:
+            return cached_value
+
+    category_codes = find_market_category_codes(category_keyword) if category_keyword else []
+
+    if not category_codes:
+        category_codes = [50000, 40000, 90000, 0]
+
+    url = f"{LOA_BASE}/markets/items"
+
+    for category_code in category_codes:
+        payload = {
+            "Sort": "CURRENT_MIN_PRICE",
+            "CategoryCode": category_code,
+            "ItemName": item_name,
+            "PageNo": 1,
+            "SortCondition": "ASC"
+        }
+
+        try:
+            res = requests.post(url, headers=loa_headers(), json=payload, timeout=10)
+
+            print("[MARKET SEARCH]", item_name, "category:", category_code, "status:", res.status_code)
+
+            if res.status_code != 200:
+                continue
+
+            data = res.json()
+            items = data.get("Items", [])
+
+            if not items:
+                continue
+
+            exact_item = None
+
+            for item in items:
+                if item.get("Name") == item_name:
+                    exact_item = item
+                    break
+
+            target = exact_item or items[0]
+            price = target.get("CurrentMinPrice")
+
+            market_cache[cache_key] = (now, price)
+            return price
+
+        except Exception as e:
+            print("[MARKET ERROR]", item_name, str(e))
+            continue
+
+    market_cache[cache_key] = (now, None)
+    return None
+
+
 def get_market_prices():
-    item_names = [
+    material_items = [
         "운명의 파괴석",
         "운명의 파괴석 결정",
         "운명의 수호석",
@@ -189,8 +252,8 @@ def get_market_prices():
 
     results = {}
 
-    for name in item_names:
-        results[name] = get_market_price(name)
+    for name in material_items:
+        results[name] = get_market_price(name, "재련")
 
     return results
 
@@ -212,8 +275,8 @@ def get_engraving_prices():
     results = []
 
     for name in engraving_names:
-        item_name = f"{name} 유물 각인서"
-        price = get_market_price(item_name)
+        item_name = f"유물 {name} 각인서"
+        price = get_market_price(item_name, "각인서")
 
         results.append({
             "name": name,
@@ -340,29 +403,9 @@ def gems():
     }
 
 
-@app.get("/market")
-def market():
-    prices = get_market_prices()
-
-    return {
-        "success": True,
-        "items": prices
-    }
-
-
-@app.get("/engravings")
-def engravings():
-    items = get_engraving_prices()
-
-    return {
-        "success": True,
-        "items": items
-    }
-
-
 @app.post("/chat")
 def chat(req: ChatRequest):
-    msg = req.message.strip()
+    msg = (req.message or req.msg or "").strip()
 
     if msg in ["/명령어", "/도움말", "/help"]:
         return {"reply": command_help()}
@@ -397,20 +440,12 @@ def chat(req: ChatRequest):
         for item in data["items"]:
             lines.append(f"{item['name']}: {format_gold(item['price'])}")
 
-        return {
-            "reply": "\n".join(lines)
-        }
+        return {"reply": "\n".join(lines)}
 
     if msg == "/시세":
-        return {
-            "reply": command_market()
-        }
+        return {"reply": command_market()}
 
     if msg == "/유각":
-        return {
-            "reply": command_engraving()
-        }
+        return {"reply": command_engraving()}
 
-    return {
-        "reply": command_help()
-    }
+    return {"reply": command_help()}
