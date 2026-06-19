@@ -39,6 +39,10 @@ def format_gold(value):
     return f"{int(value):,}G"
 
 
+def normalize(text):
+    return re.sub(r"\s+", "", str(text or "")).strip()
+
+
 def get_character_profile(name: str):
     url = f"{LOA_BASE}/armories/characters/{name}/profiles"
     res = requests.get(url, headers=loa_headers(), timeout=10)
@@ -139,38 +143,76 @@ def get_market_options():
         return data
 
     except Exception as e:
-        print("[MARKET OPTIONS ERROR]", str(e))
+        print("[MARKET OPTIONS ERROR]", str(e), flush=True)
         return None
 
 
-def find_market_category_codes(keyword: str):
+def extract_market_categories():
     options = get_market_options()
-    codes = []
+    categories = []
 
     if not options:
-        return codes
+        return categories
 
-    categories = options.get("Categories", [])
+    raw_categories = []
+
+    if isinstance(options, dict):
+        raw_categories = options.get("Categories", [])
+    elif isinstance(options, list):
+        for block in options:
+            if isinstance(block, dict) and "Categories" in block:
+                raw_categories.extend(block.get("Categories", []))
+            elif isinstance(block, dict) and "Code" in block:
+                raw_categories.append(block)
+
+    def walk(category, parent_name=""):
+        if not isinstance(category, dict):
+            return
+
+        code = category.get("Code")
+        name = category.get("CodeName", "")
+        full_name = f"{parent_name} {name}".strip()
+
+        if code:
+            categories.append({
+                "code": code,
+                "name": full_name
+            })
+
+        for sub in category.get("Subs", []) or []:
+            walk(sub, full_name)
+
+    for category in raw_categories:
+        walk(category)
+
+    return categories
+
+
+def find_market_category_codes(keywords=None):
+    categories = extract_market_categories()
+    keywords = keywords or []
+
+    if not categories:
+        return []
+
+    if not keywords:
+        return [x["code"] for x in categories]
+
+    matched = []
 
     for category in categories:
-        name = category.get("CodeName", "")
-        code = category.get("Code")
+        category_name = normalize(category["name"])
 
-        if keyword in name and code:
-            codes.append(code)
+        for keyword in keywords:
+            if normalize(keyword) in category_name:
+                matched.append(category["code"])
+                break
 
-        for sub in category.get("Subs", []):
-            sub_name = sub.get("CodeName", "")
-            sub_code = sub.get("Code")
-
-            if keyword in sub_name and sub_code:
-                codes.append(sub_code)
-
-    return codes
+    return list(dict.fromkeys(matched))
 
 
-def get_market_price(item_name: str, category_keyword: str = ""):
-    cache_key = f"{category_keyword}:{item_name}"
+def get_market_price(item_name: str, keywords=None):
+    cache_key = f"{item_name}:{','.join(keywords or [])}"
     now = time.time()
 
     if cache_key in market_cache:
@@ -178,12 +220,36 @@ def get_market_price(item_name: str, category_keyword: str = ""):
         if now - cached_time < CACHE_SECONDS:
             return cached_value
 
-    category_codes = find_market_category_codes(category_keyword) if category_keyword else []
+    preferred_codes = find_market_category_codes(keywords)
 
-    if not category_codes:
-        category_codes = [50000, 40000, 90000, 0]
+    fallback_codes = [
+        50000,
+        50010,
+        50020,
+        50030,
+        50040,
+        40000,
+        40010,
+        40020,
+        30000,
+        30010,
+        60000,
+        70000,
+        90000,
+    ]
+
+    all_codes = find_market_category_codes([])
+
+    category_codes = []
+    category_codes.extend(preferred_codes)
+    category_codes.extend(fallback_codes)
+    category_codes.extend(all_codes)
+
+    category_codes = list(dict.fromkeys([x for x in category_codes if x]))
 
     url = f"{LOA_BASE}/markets/items"
+    target_normalized = normalize(item_name)
+    found_candidates = []
 
     for category_code in category_codes:
         payload = {
@@ -195,9 +261,17 @@ def get_market_price(item_name: str, category_keyword: str = ""):
         }
 
         try:
-            res = requests.post(url, headers=loa_headers(), json=payload, timeout=10)
+            res = requests.post(url, headers=loa_headers(), json=payload, timeout=8)
 
-            print("[MARKET SEARCH]", item_name, "category:", category_code, "status:", res.status_code)
+            print(
+                "[MARKET SEARCH]",
+                item_name,
+                "category:",
+                category_code,
+                "status:",
+                res.status_code,
+                flush=True
+            )
 
             if res.status_code != 200:
                 continue
@@ -205,25 +279,43 @@ def get_market_price(item_name: str, category_keyword: str = ""):
             data = res.json()
             items = data.get("Items", [])
 
+            print(
+                "[MARKET RESULT]",
+                item_name,
+                "category:",
+                category_code,
+                "count:",
+                len(items),
+                flush=True
+            )
+
             if not items:
                 continue
 
-            exact_item = None
-
             for item in items:
-                if item.get("Name") == item_name:
-                    exact_item = item
-                    break
+                name = item.get("Name", "")
+                price = item.get("CurrentMinPrice")
 
-            target = exact_item or items[0]
-            price = target.get("CurrentMinPrice")
+                if price is None:
+                    continue
 
-            market_cache[cache_key] = (now, price)
-            return price
+                name_normalized = normalize(name)
+
+                if name_normalized == target_normalized:
+                    market_cache[cache_key] = (now, price)
+                    return price
+
+                if target_normalized in name_normalized or name_normalized in target_normalized:
+                    found_candidates.append(price)
 
         except Exception as e:
-            print("[MARKET ERROR]", item_name, str(e))
+            print("[MARKET ERROR]", item_name, "category:", category_code, str(e), flush=True)
             continue
+
+    if found_candidates:
+        price = min(found_candidates)
+        market_cache[cache_key] = (now, price)
+        return price
 
     market_cache[cache_key] = (now, None)
     return None
@@ -253,7 +345,10 @@ def get_market_prices():
     results = {}
 
     for name in material_items:
-        results[name] = get_market_price(name, "재련")
+        results[name] = get_market_price(
+            name,
+            ["재련", "강화", "재료", "파편", "돌파", "숨결", "융화"]
+        )
 
     return results
 
@@ -276,7 +371,7 @@ def get_engraving_prices():
 
     for name in engraving_names:
         item_name = f"유물 {name} 각인서"
-        price = get_market_price(item_name, "각인서")
+        price = get_market_price(item_name, ["각인서", "각인"])
 
         results.append({
             "name": name,
