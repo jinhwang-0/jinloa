@@ -411,25 +411,47 @@ def command_engraving():
 
 
 def command_auction(msg: str):
-    raw = msg.replace("/경매", "", 1).strip().replace(",", "")
+    raw = (
+        msg.replace("/경매", "", 1)
+           .replace(".경매", "", 1)
+           .strip()
+           .replace(",", "")
+    )
 
     if not raw or not raw.isdigit():
-        return "경매 금액을 입력해주세요.\n예: .경매 183000 또는 /경매 183000"
+        return (
+            "거래소 시세를 입력해주세요.\n"
+            "예: .경매 165000\n"
+            "또는 /경매 165000"
+        )
 
     price = int(raw)
 
-    four_person = int(price * 0.75)
-    eight_person = int(price * 0.875)
+    # 거래소 수수료 5% 제외
+    receive = price * 0.95
+
+    # 4인
+    four_break = int(receive * 3 / 4)
+    four_bid = int(four_break * 0.91)
+
+    # 8인
+    eight_break = int(receive * 7 / 8)
+    eight_bid = int(eight_break * 0.91)
 
     return f"""⚖️ 경매 계산기
 
-입찰가: {format_gold(price)}
+👥 4인 레이드
 
-4인 기준 손익분기: {format_gold(four_person)}
-8인 기준 손익분기: {format_gold(eight_person)}
+손익분기 : {format_gold(four_break)}
+입찰추천 : {format_gold(four_bid)}
 
-4인: 입찰가의 75%
-8인: 입찰가의 87.5%"""
+────────────
+
+👥 8인 레이드
+
+손익분기 : {format_gold(eight_break)}
+입찰추천 : {format_gold(eight_bid)}
+"""
 
 
 @app.get("/")
