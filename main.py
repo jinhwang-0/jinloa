@@ -466,17 +466,14 @@ def command_auction(msg: str):
 
     return f"""⚖️ 경매 계산기
 
-거래소 시세: {format_gold(price)}
-
 👥 4인 레이드
 입찰추천 : {format_gold(four_bid)}
 손익분기 : {format_gold(four_break)}
-
+-------------------
 👥 8인 레이드
 입찰추천 : {format_gold(eight_bid)}
 손익분기 : {format_gold(eight_break)}
-
-거래소 수수료 5% 반영"""
+"""
 
 
 @app.get("/")
