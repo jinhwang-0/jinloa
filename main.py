@@ -142,8 +142,7 @@ def get_market_options():
 
         return data
 
-    except Exception as e:
-        print("[MARKET OPTIONS ERROR]", str(e), flush=True)
+    except Exception:
         return None
 
 
@@ -354,23 +353,23 @@ def get_engraving_prices():
 def command_help():
     return """🤖 진로아 명령어
 
-.캐릭 캐릭터명
+.캐릭 캐릭터명 / /캐릭 캐릭터명
 캐릭터 기본 정보를 조회합니다.
 
-.보석
+.보석 / /보석
 주요 4티어 보석 최저 즉시구매가를 조회합니다.
 
-.시세
+.시세 / /시세
 주요 재련 재료 시세를 조회합니다.
 
-.유각
+.유각 / /유각
 주요 유물 각인서 시세를 조회합니다.
 
-.경매 금액
+.경매 금액 / /경매 금액
 4인/8인 경매 손익분기 금액을 계산합니다.
 예: .경매 183000
 
-.명령어
+.명령어 / /명령어
 사용 가능한 명령어를 확인합니다."""
 
 
@@ -412,10 +411,10 @@ def command_engraving():
 
 
 def command_auction(msg: str):
-    raw = msg.replace(".경매", "", 1).strip().replace(",", "")
+    raw = msg.replace("/경매", "", 1).strip().replace(",", "")
 
     if not raw or not raw.isdigit():
-        return "경매 금액을 입력해주세요.\n예: .경매 183000"
+        return "경매 금액을 입력해주세요.\n예: .경매 183000 또는 /경매 183000"
 
     price = int(raw)
 
@@ -501,11 +500,14 @@ def gems():
 def chat(req: ChatRequest):
     msg = (req.message or req.msg or "").strip()
 
-    if msg in [".명령어", ".도움말", ".help"]:
+    if msg.startswith("."):
+        msg = "/" + msg[1:]
+
+    if msg in ["/명령어", "/도움말", "/help"]:
         return {"reply": command_help()}
 
-    if msg.startswith(".캐릭"):
-        name = msg.replace(".캐릭", "", 1).strip()
+    if msg.startswith("/캐릭"):
+        name = msg.replace("/캐릭", "", 1).strip()
 
         if not name:
             return {"reply": "캐릭터명을 입력해주세요.\n예: .캐릭 진황"}
@@ -526,7 +528,7 @@ def chat(req: ChatRequest):
 
         return {"reply": reply}
 
-    if msg == ".보석":
+    if msg == "/보석":
         data = gems()
 
         lines = ["💎 보석 최저 즉시구매가"]
@@ -536,13 +538,13 @@ def chat(req: ChatRequest):
 
         return {"reply": "\n".join(lines)}
 
-    if msg == ".시세":
+    if msg == "/시세":
         return {"reply": command_market()}
 
-    if msg == ".유각":
+    if msg == "/유각":
         return {"reply": command_engraving()}
 
-    if msg.startswith(".경매"):
+    if msg.startswith("/경매"):
         return {"reply": command_auction(msg)}
 
     return {"reply": command_help()}
