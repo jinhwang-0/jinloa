@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import random
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI
@@ -15,7 +16,7 @@ app = FastAPI()
 LOA_API_KEY = os.getenv("LOA_API_KEY")
 LOA_BASE = "https://developer-lostark.game.onstove.com"
 
-CACHE_SECONDS = 60
+CACHE_SECONDS = 600
 market_cache = {}
 market_options_cache = {"time": 0, "data": None}
 
@@ -23,6 +24,30 @@ market_options_cache = {"time": 0, "data": None}
 class ChatRequest(BaseModel):
     message: Optional[str] = None
     msg: Optional[str] = None
+
+
+FOODS = [
+    "김치찌개", "된장찌개", "부대찌개", "순두부찌개", "청국장",
+    "제육볶음", "불고기", "비빔밥", "돌솥비빔밥", "김밥",
+    "라면", "떡볶이", "순대", "튀김", "오므라이스",
+    "돈까스", "치즈돈까스", "카레", "우동", "냉모밀",
+    "짜장면", "짬뽕", "볶음밥", "탕수육", "마라탕",
+    "쌀국수", "팟타이", "분짜", "월남쌈", "파스타",
+    "피자", "햄버거", "샌드위치", "샐러드", "스테이크",
+    "초밥", "회덮밥", "연어덮밥", "가츠동", "규동",
+    "텐동", "라멘", "야끼소바", "타코야끼", "오코노미야끼",
+    "삼겹살", "목살", "돼지갈비", "소갈비", "곱창",
+    "막창", "닭갈비", "찜닭", "닭볶음탕", "치킨",
+    "족발", "보쌈", "감자탕", "뼈해장국", "설렁탕",
+    "갈비탕", "순대국", "돼지국밥", "콩나물국밥", "육개장",
+    "칼국수", "수제비", "잔치국수", "비빔국수", "냉면",
+    "쫄면", "만두국", "떡국", "낙지볶음", "오징어볶음",
+    "고등어구이", "삼치구이", "갈치조림", "아구찜", "해물찜",
+    "샤브샤브", "월남쌈 샤브", "훠궈", "양꼬치", "케밥",
+    "타코", "부리또", "브리또볼", "리조또", "그라탕",
+    "토스트", "베이글", "브런치", "오므렛", "팬케이크",
+    "닭강정", "김치볶음밥", "참치마요덮밥", "스팸마요덮밥", "컵밥"
+]
 
 
 def loa_headers():
@@ -41,6 +66,11 @@ def format_gold(value):
 
 def normalize(text):
     return re.sub(r"\s+", "", str(text or "")).strip()
+
+
+def command_food(kind: str):
+    food = random.choice(FOODS)
+    return f"🍽️ {kind} 추천\n\n오늘은 {food} 어때?"
 
 
 def get_character_profile(name: str):
@@ -173,10 +203,7 @@ def extract_market_categories():
         full_name = f"{parent_name} {name}".strip()
 
         if code:
-            categories.append({
-                "code": code,
-                "name": full_name
-            })
+            categories.append({"code": code, "name": full_name})
 
         for sub in category.get("Subs", []) or []:
             walk(sub, full_name)
@@ -366,8 +393,14 @@ def command_help():
 주요 유물 각인서 시세를 조회합니다.
 
 .경매 금액 / /경매 금액
-4인/8인 경매 손익분기 금액을 계산합니다.
-예: .경매 183000
+4인/8인 경매 계산을 합니다.
+예: .경매 165000
+
+.점메추 / /점메추
+점심 메뉴를 추천합니다.
+
+.저메추 / /저메추
+저녁 메뉴를 추천합니다.
 
 .명령어 / /명령어
 사용 가능한 명령어를 확인합니다."""
@@ -419,39 +452,31 @@ def command_auction(msg: str):
     )
 
     if not raw or not raw.isdigit():
-        return (
-            "거래소 시세를 입력해주세요.\n"
-            "예: .경매 165000\n"
-            "또는 /경매 165000"
-        )
+        return "거래소 시세를 입력해주세요.\n예: .경매 165000 또는 /경매 165000"
 
     price = int(raw)
 
-    # 거래소 수수료 5% 제외
     receive = price * 0.95
 
-    # 4인
     four_break = int(receive * 3 / 4)
     four_bid = int(four_break * 0.91)
 
-    # 8인
     eight_break = int(receive * 7 / 8)
     eight_bid = int(eight_break * 0.91)
 
     return f"""⚖️ 경매 계산기
 
+거래소 시세: {format_gold(price)}
+
 👥 4인 레이드
-
-손익분기 : {format_gold(four_break)}
 입찰추천 : {format_gold(four_bid)}
-
-────────────
+손익분기 : {format_gold(four_break)}
 
 👥 8인 레이드
-
-손익분기 : {format_gold(eight_break)}
 입찰추천 : {format_gold(eight_bid)}
-"""
+손익분기 : {format_gold(eight_break)}
+
+거래소 수수료 5% 반영"""
 
 
 @app.get("/")
@@ -525,6 +550,15 @@ def chat(req: ChatRequest):
     if msg.startswith("."):
         msg = "/" + msg[1:]
 
+    known_commands = [
+        "/명령어", "/도움말", "/help",
+        "/캐릭", "/보석", "/시세", "/유각",
+        "/경매", "/점메추", "/저메추"
+    ]
+
+    if not any(msg == cmd or msg.startswith(cmd + " ") for cmd in known_commands):
+        return {"reply": ""}
+
     if msg in ["/명령어", "/도움말", "/help"]:
         return {"reply": command_help()}
 
@@ -569,4 +603,10 @@ def chat(req: ChatRequest):
     if msg.startswith("/경매"):
         return {"reply": command_auction(msg)}
 
-    return {"reply": command_help()}
+    if msg == "/점메추":
+        return {"reply": command_food("점심 메뉴")}
+
+    if msg == "/저메추":
+        return {"reply": command_food("저녁 메뉴")}
+
+    return {"reply": ""}
