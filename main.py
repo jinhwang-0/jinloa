@@ -223,19 +223,10 @@ def get_market_price(item_name: str, keywords=None):
     preferred_codes = find_market_category_codes(keywords)
 
     fallback_codes = [
-        50000,
-        50010,
-        50020,
-        50030,
-        50040,
-        40000,
-        40010,
-        40020,
-        30000,
-        30010,
-        60000,
-        70000,
-        90000,
+        50000, 50010, 50020, 50030, 50040,
+        40000, 40010, 40020,
+        30000, 30010,
+        60000, 70000, 90000,
     ]
 
     all_codes = find_market_category_codes([])
@@ -244,7 +235,6 @@ def get_market_price(item_name: str, keywords=None):
     category_codes.extend(preferred_codes)
     category_codes.extend(fallback_codes)
     category_codes.extend(all_codes)
-
     category_codes = list(dict.fromkeys([x for x in category_codes if x]))
 
     url = f"{LOA_BASE}/markets/items"
@@ -263,31 +253,11 @@ def get_market_price(item_name: str, keywords=None):
         try:
             res = requests.post(url, headers=loa_headers(), json=payload, timeout=8)
 
-            print(
-                "[MARKET SEARCH]",
-                item_name,
-                "category:",
-                category_code,
-                "status:",
-                res.status_code,
-                flush=True
-            )
-
             if res.status_code != 200:
                 continue
 
             data = res.json()
             items = data.get("Items", [])
-
-            print(
-                "[MARKET RESULT]",
-                item_name,
-                "category:",
-                category_code,
-                "count:",
-                len(items),
-                flush=True
-            )
 
             if not items:
                 continue
@@ -308,8 +278,7 @@ def get_market_price(item_name: str, keywords=None):
                 if target_normalized in name_normalized or name_normalized in target_normalized:
                     found_candidates.append(price)
 
-        except Exception as e:
-            print("[MARKET ERROR]", item_name, "category:", category_code, str(e), flush=True)
+        except Exception:
             continue
 
     if found_candidates:
@@ -385,19 +354,23 @@ def get_engraving_prices():
 def command_help():
     return """🤖 진로아 명령어
 
-/캐릭 캐릭터명
+.캐릭 캐릭터명
 캐릭터 기본 정보를 조회합니다.
 
-/보석
+.보석
 주요 4티어 보석 최저 즉시구매가를 조회합니다.
 
-/시세
+.시세
 주요 재련 재료 시세를 조회합니다.
 
-/유각
+.유각
 주요 유물 각인서 시세를 조회합니다.
 
-/명령어
+.경매 금액
+4인/8인 경매 손익분기 금액을 계산합니다.
+예: .경매 183000
+
+.명령어
 사용 가능한 명령어를 확인합니다."""
 
 
@@ -436,6 +409,28 @@ def command_engraving():
         lines.append(f"{item['name']}: {format_gold(item['price'])}")
 
     return "\n".join(lines)
+
+
+def command_auction(msg: str):
+    raw = msg.replace(".경매", "", 1).strip().replace(",", "")
+
+    if not raw or not raw.isdigit():
+        return "경매 금액을 입력해주세요.\n예: .경매 183000"
+
+    price = int(raw)
+
+    four_person = int(price * 0.75)
+    eight_person = int(price * 0.875)
+
+    return f"""⚖️ 경매 계산기
+
+입찰가: {format_gold(price)}
+
+4인 기준 손익분기: {format_gold(four_person)}
+8인 기준 손익분기: {format_gold(eight_person)}
+
+4인: 입찰가의 75%
+8인: 입찰가의 87.5%"""
 
 
 @app.get("/")
@@ -506,14 +501,14 @@ def gems():
 def chat(req: ChatRequest):
     msg = (req.message or req.msg or "").strip()
 
-    if msg in ["/명령어", "/도움말", "/help"]:
+    if msg in [".명령어", ".도움말", ".help"]:
         return {"reply": command_help()}
 
-    if msg.startswith("/캐릭"):
-        name = msg.replace("/캐릭", "", 1).strip()
+    if msg.startswith(".캐릭"):
+        name = msg.replace(".캐릭", "", 1).strip()
 
         if not name:
-            return {"reply": "캐릭터명을 입력해주세요.\n예: /캐릭 진황"}
+            return {"reply": "캐릭터명을 입력해주세요.\n예: .캐릭 진황"}
 
         data = character(name)
 
@@ -531,7 +526,7 @@ def chat(req: ChatRequest):
 
         return {"reply": reply}
 
-    if msg == "/보석":
+    if msg == ".보석":
         data = gems()
 
         lines = ["💎 보석 최저 즉시구매가"]
@@ -541,10 +536,13 @@ def chat(req: ChatRequest):
 
         return {"reply": "\n".join(lines)}
 
-    if msg == "/시세":
+    if msg == ".시세":
         return {"reply": command_market()}
 
-    if msg == "/유각":
+    if msg == ".유각":
         return {"reply": command_engraving()}
+
+    if msg.startswith(".경매"):
+        return {"reply": command_auction(msg)}
 
     return {"reply": command_help()}
