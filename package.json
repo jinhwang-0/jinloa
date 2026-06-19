@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "node-kakao": "^4.5.0"
+  }
+}
