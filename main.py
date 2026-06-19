@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI
@@ -13,6 +14,9 @@ app = FastAPI()
 LOA_API_KEY = os.getenv("LOA_API_KEY")
 LOA_BASE = "https://developer-lostark.game.onstove.com"
 
+CACHE_SECONDS = 60
+market_cache = {}
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -24,6 +28,12 @@ def loa_headers():
         "content-type": "application/json",
         "authorization": f"bearer {LOA_API_KEY}",
     }
+
+
+def format_gold(value):
+    if value is None:
+        return "-"
+    return f"{int(value):,}G"
 
 
 def get_character_profile(name: str):
@@ -109,10 +119,161 @@ def get_gem_lowest_price(item_name: str):
     }
 
 
-def format_gold(value):
-    if value is None:
-        return "-"
-    return f"{int(value):,}G"
+def get_market_price(item_name: str):
+    now = time.time()
+
+    if item_name in market_cache:
+        cached_time, cached_value = market_cache[item_name]
+        if now - cached_time < CACHE_SECONDS:
+            return cached_value
+
+    url = f"{LOA_BASE}/markets/items"
+
+    payload = {
+        "Sort": "GRADE",
+        "CategoryCode": 0,
+        "ItemName": item_name,
+        "PageNo": 1,
+        "SortCondition": "ASC"
+    }
+
+    try:
+        res = requests.post(url, headers=loa_headers(), json=payload, timeout=10)
+        res.raise_for_status()
+
+        data = res.json()
+        items = data.get("Items", [])
+
+        if not items:
+            market_cache[item_name] = (now, None)
+            return None
+
+        exact_item = None
+
+        for item in items:
+            if item.get("Name") == item_name:
+                exact_item = item
+                break
+
+        target = exact_item or items[0]
+        price = target.get("CurrentMinPrice")
+
+        market_cache[item_name] = (now, price)
+        return price
+
+    except Exception:
+        market_cache[item_name] = (now, None)
+        return None
+
+
+def get_market_prices():
+    item_names = [
+        "운명의 파괴석",
+        "운명의 파괴석 결정",
+        "운명의 수호석",
+        "운명의 수호석 결정",
+        "운명의 돌파석",
+        "위대한 운명의 돌파석",
+        "아비도스 융화 재료",
+        "상급 아비도스 융화 재료",
+        "명예의 파편 주머니(소)",
+        "명예의 파편 주머니(중)",
+        "명예의 파편 주머니(대)",
+        "운명의 파편 주머니(소)",
+        "운명의 파편 주머니(중)",
+        "운명의 파편 주머니(대)",
+        "용암의 숨결",
+        "빙하의 숨결",
+        "에스더의 기운",
+    ]
+
+    results = {}
+
+    for name in item_names:
+        results[name] = get_market_price(name)
+
+    return results
+
+
+def get_engraving_prices():
+    engraving_names = [
+        "원한",
+        "아드레날린",
+        "돌격대장",
+        "예리한 둔기",
+        "질량 증가",
+        "저주받은 인형",
+        "기습의 대가",
+        "각성",
+        "타격의 대가",
+        "전문의",
+    ]
+
+    results = []
+
+    for name in engraving_names:
+        item_name = f"{name} 유물 각인서"
+        price = get_market_price(item_name)
+
+        results.append({
+            "name": name,
+            "itemName": item_name,
+            "price": price
+        })
+
+    return results
+
+
+def command_help():
+    return """🤖 진로아 명령어
+
+/캐릭 캐릭터명
+캐릭터 기본 정보를 조회합니다.
+
+/보석
+주요 4티어 보석 최저 즉시구매가를 조회합니다.
+
+/시세
+주요 재련 재료 시세를 조회합니다.
+
+/유각
+주요 유물 각인서 시세를 조회합니다.
+
+/명령어
+사용 가능한 명령어를 확인합니다."""
+
+
+def command_market():
+    prices = get_market_prices()
+
+    return f"""📦 주요 재료 시세
+
+운명의 파괴석: {format_gold(prices.get("운명의 파괴석"))}
+운명의 파괴석 결정: {format_gold(prices.get("운명의 파괴석 결정"))}
+운명의 수호석: {format_gold(prices.get("운명의 수호석"))}
+운명의 수호석 결정: {format_gold(prices.get("운명의 수호석 결정"))}
+운명의 돌파석: {format_gold(prices.get("운명의 돌파석"))}
+위대한 운명의 돌파석: {format_gold(prices.get("위대한 운명의 돌파석"))}
+아비도스 융화 재료: {format_gold(prices.get("아비도스 융화 재료"))}
+상급 아비도스 융화 재료: {format_gold(prices.get("상급 아비도스 융화 재료"))}
+
+명예의 파편: {format_gold(prices.get("명예의 파편 주머니(소)"))}(소) / {format_gold(prices.get("명예의 파편 주머니(중)"))}(중) / {format_gold(prices.get("명예의 파편 주머니(대)"))}(대)
+운명의 파편: {format_gold(prices.get("운명의 파편 주머니(소)"))}(소) / {format_gold(prices.get("운명의 파편 주머니(중)"))}(중) / {format_gold(prices.get("운명의 파편 주머니(대)"))}(대)
+
+용암의 숨결: {format_gold(prices.get("용암의 숨결"))}
+빙하의 숨결: {format_gold(prices.get("빙하의 숨결"))}
+에스더의 기운: {format_gold(prices.get("에스더의 기운"))}"""
+
+
+def command_engraving():
+    items = get_engraving_prices()
+
+    lines = ["📘 유각 시세", ""]
+
+    for item in items:
+        lines.append(f"{item['name']}: {format_gold(item['price'])}")
+
+    return "\n".join(lines)
 
 
 @app.get("/")
@@ -179,12 +340,35 @@ def gems():
     }
 
 
+@app.get("/market")
+def market():
+    prices = get_market_prices()
+
+    return {
+        "success": True,
+        "items": prices
+    }
+
+
+@app.get("/engravings")
+def engravings():
+    items = get_engraving_prices()
+
+    return {
+        "success": True,
+        "items": items
+    }
+
+
 @app.post("/chat")
 def chat(req: ChatRequest):
     msg = req.message.strip()
 
+    if msg in ["/명령어", "/도움말", "/help"]:
+        return {"reply": command_help()}
+
     if msg.startswith("/캐릭"):
-        name = msg.replace("/캐릭", "").strip()
+        name = msg.replace("/캐릭", "", 1).strip()
 
         if not name:
             return {"reply": "캐릭터명을 입력해주세요.\n예: /캐릭 진황"}
@@ -217,6 +401,16 @@ def chat(req: ChatRequest):
             "reply": "\n".join(lines)
         }
 
+    if msg == "/시세":
+        return {
+            "reply": command_market()
+        }
+
+    if msg == "/유각":
+        return {
+            "reply": command_engraving()
+        }
+
     return {
-        "reply": "지원하지 않는 명령어예요.\n사용 가능:\n/캐릭 캐릭터명\n/보석"
+        "reply": command_help()
     }
