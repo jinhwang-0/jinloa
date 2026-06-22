@@ -18,7 +18,7 @@ LOA_BASE = "https://developer-lostark.game.onstove.com"
 
 CACHE_SECONDS = 600
 market_cache = {}
-market_options_cache = {"time": 0, "data": None}
+auction_cache = {}
 
 
 class ChatRequest(BaseModel):
@@ -47,6 +47,41 @@ FOODS = [
     "타코", "부리또", "브리또볼", "리조또", "그라탕",
     "토스트", "베이글", "브런치", "오므렛", "팬케이크",
     "닭강정", "김치볶음밥", "참치마요덮밥", "스팸마요덮밥", "컵밥"
+]
+
+
+MARKET_ITEMS = {
+    "운명의 파괴석": 50010,
+    "운명의 파괴석 결정": 50010,
+    "운명의 수호석": 50020,
+    "운명의 수호석 결정": 50020,
+    "운명의 돌파석": 50030,
+    "위대한 운명의 돌파석": 50030,
+    "아비도스 융화 재료": 50040,
+    "상급 아비도스 융화 재료": 50040,
+    "명예의 파편 주머니(소)": 50060,
+    "명예의 파편 주머니(중)": 50060,
+    "명예의 파편 주머니(대)": 50060,
+    "운명의 파편 주머니(소)": 50060,
+    "운명의 파편 주머니(중)": 50060,
+    "운명의 파편 주머니(대)": 50060,
+    "용암의 숨결": 50050,
+    "빙하의 숨결": 50050,
+    "에스더의 기운": 50000,
+}
+
+
+ENGRAVING_NAMES = [
+    "원한",
+    "아드레날린",
+    "돌격대장",
+    "예리한 둔기",
+    "질량 증가",
+    "저주받은 인형",
+    "기습의 대가",
+    "각성",
+    "타격의 대가",
+    "전문의",
 ]
 
 
@@ -117,7 +152,79 @@ def get_combat_power_from_html(name: str):
         return None
 
 
+def get_market_price(item_name: str, category_code: int):
+    cache_key = f"{category_code}:{item_name}"
+    now = time.time()
+
+    if cache_key in market_cache:
+        cached_time, cached_value = market_cache[cache_key]
+        if now - cached_time < CACHE_SECONDS:
+            return cached_value
+
+    url = f"{LOA_BASE}/markets/items"
+
+    payload = {
+        "Sort": "CURRENT_MIN_PRICE",
+        "CategoryCode": category_code,
+        "ItemName": item_name,
+        "PageNo": 1,
+        "SortCondition": "ASC"
+    }
+
+    try:
+        res = requests.post(url, headers=loa_headers(), json=payload, timeout=8)
+
+        if res.status_code != 200:
+            market_cache[cache_key] = (now, None)
+            return None
+
+        data = res.json()
+        items = data.get("Items", [])
+
+        if not items:
+            market_cache[cache_key] = (now, None)
+            return None
+
+        target_normalized = normalize(item_name)
+
+        exact_item = None
+        candidates = []
+
+        for item in items:
+            name = item.get("Name", "")
+            price = item.get("CurrentMinPrice")
+            if price is None:
+                continue
+
+            name_normalized = normalize(name)
+
+            if name_normalized == target_normalized:
+                exact_item = item
+                break
+
+            if target_normalized in name_normalized or name_normalized in target_normalized:
+                candidates.append(item)
+
+        target = exact_item or (candidates[0] if candidates else items[0])
+        price = target.get("CurrentMinPrice")
+
+        market_cache[cache_key] = (now, price)
+        return price
+
+    except Exception:
+        market_cache[cache_key] = (now, None)
+        return None
+
+
 def get_gem_lowest_price(item_name: str):
+    cache_key = f"210000:{item_name}"
+    now = time.time()
+
+    if cache_key in auction_cache:
+        cached_time, cached_value = auction_cache[cache_key]
+        if now - cached_time < CACHE_SECONDS:
+            return cached_value
+
     url = f"{LOA_BASE}/auctions/items"
 
     payload = {
@@ -136,237 +243,44 @@ def get_gem_lowest_price(item_name: str):
         "SortCondition": "ASC"
     }
 
-    res = requests.post(url, headers=loa_headers(), json=payload, timeout=10)
-    res.raise_for_status()
-
-    data = res.json()
-    items = data.get("Items", [])
-
-    if not items:
-        return None
-
-    first = items[0]
-    auction_info = first.get("AuctionInfo", {})
-
-    return {
-        "name": first.get("Name", item_name),
-        "price": auction_info.get("BuyPrice"),
-        "grade": first.get("Grade"),
-        "icon": first.get("Icon")
-    }
-
-
-def get_market_options():
-    now = time.time()
-
-    if market_options_cache["data"] and now - market_options_cache["time"] < 3600:
-        return market_options_cache["data"]
-
     try:
-        res = requests.get(f"{LOA_BASE}/markets/options", headers=loa_headers(), timeout=10)
+        res = requests.post(url, headers=loa_headers(), json=payload, timeout=8)
         res.raise_for_status()
+
         data = res.json()
+        items = data.get("Items", [])
 
-        market_options_cache["time"] = now
-        market_options_cache["data"] = data
+        if not items:
+            auction_cache[cache_key] = (now, None)
+            return None
 
-        return data
+        first = items[0]
+        auction_info = first.get("AuctionInfo", {})
+        price = auction_info.get("BuyPrice")
 
-    except Exception:
-        return None
-
-
-def extract_market_categories():
-    options = get_market_options()
-    categories = []
-
-    if not options:
-        return categories
-
-    raw_categories = []
-
-    if isinstance(options, dict):
-        raw_categories = options.get("Categories", [])
-    elif isinstance(options, list):
-        for block in options:
-            if isinstance(block, dict) and "Categories" in block:
-                raw_categories.extend(block.get("Categories", []))
-            elif isinstance(block, dict) and "Code" in block:
-                raw_categories.append(block)
-
-    def walk(category, parent_name=""):
-        if not isinstance(category, dict):
-            return
-
-        code = category.get("Code")
-        name = category.get("CodeName", "")
-        full_name = f"{parent_name} {name}".strip()
-
-        if code:
-            categories.append({"code": code, "name": full_name})
-
-        for sub in category.get("Subs", []) or []:
-            walk(sub, full_name)
-
-    for category in raw_categories:
-        walk(category)
-
-    return categories
-
-
-def find_market_category_codes(keywords=None):
-    categories = extract_market_categories()
-    keywords = keywords or []
-
-    if not categories:
-        return []
-
-    if not keywords:
-        return [x["code"] for x in categories]
-
-    matched = []
-
-    for category in categories:
-        category_name = normalize(category["name"])
-
-        for keyword in keywords:
-            if normalize(keyword) in category_name:
-                matched.append(category["code"])
-                break
-
-    return list(dict.fromkeys(matched))
-
-
-def get_market_price(item_name: str, keywords=None):
-    cache_key = f"{item_name}:{','.join(keywords or [])}"
-    now = time.time()
-
-    if cache_key in market_cache:
-        cached_time, cached_value = market_cache[cache_key]
-        if now - cached_time < CACHE_SECONDS:
-            return cached_value
-
-    preferred_codes = find_market_category_codes(keywords)
-
-    fallback_codes = [
-        50000, 50010, 50020, 50030, 50040,
-        40000, 40010, 40020,
-        30000, 30010,
-        60000, 70000, 90000,
-    ]
-
-    all_codes = find_market_category_codes([])
-
-    category_codes = []
-    category_codes.extend(preferred_codes)
-    category_codes.extend(fallback_codes)
-    category_codes.extend(all_codes)
-    category_codes = list(dict.fromkeys([x for x in category_codes if x]))
-
-    url = f"{LOA_BASE}/markets/items"
-    target_normalized = normalize(item_name)
-    found_candidates = []
-
-    for category_code in category_codes:
-        payload = {
-            "Sort": "CURRENT_MIN_PRICE",
-            "CategoryCode": category_code,
-            "ItemName": item_name,
-            "PageNo": 1,
-            "SortCondition": "ASC"
-        }
-
-        try:
-            res = requests.post(url, headers=loa_headers(), json=payload, timeout=8)
-
-            if res.status_code != 200:
-                continue
-
-            data = res.json()
-            items = data.get("Items", [])
-
-            if not items:
-                continue
-
-            for item in items:
-                name = item.get("Name", "")
-                price = item.get("CurrentMinPrice")
-
-                if price is None:
-                    continue
-
-                name_normalized = normalize(name)
-
-                if name_normalized == target_normalized:
-                    market_cache[cache_key] = (now, price)
-                    return price
-
-                if target_normalized in name_normalized or name_normalized in target_normalized:
-                    found_candidates.append(price)
-
-        except Exception:
-            continue
-
-    if found_candidates:
-        price = min(found_candidates)
-        market_cache[cache_key] = (now, price)
+        auction_cache[cache_key] = (now, price)
         return price
 
-    market_cache[cache_key] = (now, None)
-    return None
+    except Exception:
+        auction_cache[cache_key] = (now, None)
+        return None
 
 
 def get_market_prices():
-    material_items = [
-        "운명의 파괴석",
-        "운명의 파괴석 결정",
-        "운명의 수호석",
-        "운명의 수호석 결정",
-        "운명의 돌파석",
-        "위대한 운명의 돌파석",
-        "아비도스 융화 재료",
-        "상급 아비도스 융화 재료",
-        "명예의 파편 주머니(소)",
-        "명예의 파편 주머니(중)",
-        "명예의 파편 주머니(대)",
-        "운명의 파편 주머니(소)",
-        "운명의 파편 주머니(중)",
-        "운명의 파편 주머니(대)",
-        "용암의 숨결",
-        "빙하의 숨결",
-        "에스더의 기운",
-    ]
-
     results = {}
 
-    for name in material_items:
-        results[name] = get_market_price(
-            name,
-            ["재련", "강화", "재료", "파편", "돌파", "숨결", "융화"]
-        )
+    for name, category_code in MARKET_ITEMS.items():
+        results[name] = get_market_price(name, category_code)
 
     return results
 
 
 def get_engraving_prices():
-    engraving_names = [
-        "원한",
-        "아드레날린",
-        "돌격대장",
-        "예리한 둔기",
-        "질량 증가",
-        "저주받은 인형",
-        "기습의 대가",
-        "각성",
-        "타격의 대가",
-        "전문의",
-    ]
-
     results = []
 
-    for name in engraving_names:
+    for name in ENGRAVING_NAMES:
         item_name = f"유물 {name} 각인서"
-        price = get_market_price(item_name, ["각인서", "각인"])
+        price = get_market_price(item_name, 40000)
 
         results.append({
             "name": name,
@@ -380,26 +294,29 @@ def get_engraving_prices():
 def command_help():
     return """🤖 진로아 명령어
 
-.캐릭 캐릭터명
+.캐릭 캐릭터명 / /캐릭 캐릭터명
 캐릭터 기본 정보를 조회합니다.
 
-.보석
+.보석 / /보석
 주요 4티어 보석 최저 즉시구매가를 조회합니다.
 
-.시세
+.시세 / /시세
 주요 재련 재료 시세를 조회합니다.
 
-.유각
+.유각 / /유각
 주요 유물 각인서 시세를 조회합니다.
 
-.경매 금액
+.경매 금액 / /경매 금액
 4인/8인 경매 계산을 합니다.
 예: .경매 165000
 
-.점메추 / .저메추
-점심/저녁 메뉴를 추천합니다.
+.점메추 / /점메추
+점심 메뉴를 추천합니다.
 
-.명령어
+.저메추 / /저메추
+저녁 메뉴를 추천합니다.
+
+.명령어 / /명령어
 사용 가능한 명령어를 확인합니다."""
 
 
@@ -463,14 +380,17 @@ def command_auction(msg: str):
 
     return f"""⚖️ 경매 계산기
 
+거래소 시세: {format_gold(price)}
+
 👥 4인 레이드
 입찰추천 : {format_gold(four_bid)}
 손익분기 : {format_gold(four_break)}
--------------------
+
 👥 8인 레이드
 입찰추천 : {format_gold(eight_bid)}
 손익분기 : {format_gold(eight_break)}
-"""
+
+거래소 수수료 5% 반영"""
 
 
 @app.get("/")
@@ -519,17 +439,11 @@ def gems():
     results = []
 
     for name in gem_names:
-        try:
-            data = get_gem_lowest_price(name)
-            results.append({
-                "name": name,
-                "price": data["price"] if data else None
-            })
-        except Exception:
-            results.append({
-                "name": name,
-                "price": None
-            })
+        price = get_gem_lowest_price(name)
+        results.append({
+            "name": name,
+            "price": price
+        })
 
     return {
         "success": True,
