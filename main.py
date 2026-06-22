@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 import random
 import requests
 from bs4 import BeautifulSoup
@@ -8,6 +9,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional
+from datetime import datetime, timezone, timedelta
 
 load_dotenv()
 
@@ -17,6 +19,9 @@ LOA_API_KEY = os.getenv("LOA_API_KEY")
 LOA_BASE = "https://developer-lostark.game.onstove.com"
 
 CACHE_SECONDS = 600
+HISTORY_FILE = "price_history.json"
+KST = timezone(timedelta(hours=9))
+
 market_cache = {}
 auction_cache = {}
 
@@ -101,6 +106,79 @@ def format_gold(value):
 
 def normalize(text):
     return re.sub(r"\s+", "", str(text or "")).strip()
+
+
+def today_key():
+    return datetime.now(KST).strftime("%Y-%m-%d")
+
+
+def load_history():
+    if not os.path.exists(HISTORY_FILE):
+        return {}
+
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_history(history):
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def get_previous_prices(section):
+    history = load_history()
+    section_data = history.get(section, {})
+    today = today_key()
+
+    past_dates = sorted([d for d in section_data.keys() if d < today], reverse=True)
+
+    if not past_dates:
+        return {}
+
+    return section_data.get(past_dates[0], {})
+
+
+def update_today_prices(section, prices):
+    history = load_history()
+    today = today_key()
+
+    if section not in history:
+        history[section] = {}
+
+    clean_prices = {}
+
+    for name, price in prices.items():
+        if price is not None:
+            clean_prices[name] = int(price)
+
+    history[section][today] = clean_prices
+    save_history(history)
+
+
+def format_gold_with_diff(value, previous_value):
+    if value is None:
+        return "-"
+
+    text = format_gold(value)
+
+    if previous_value is None:
+        return text
+
+    diff = int(value) - int(previous_value)
+
+    if diff > 0:
+        return f"{text} ▲{format_gold(diff)}"
+
+    if diff < 0:
+        return f"{text} ▼{format_gold(abs(diff))}"
+
+    return f"{text} -"
 
 
 def command_food(kind: str):
@@ -193,6 +271,7 @@ def get_market_price(item_name: str, category_code: int):
         for item in items:
             name = item.get("Name", "")
             price = item.get("CurrentMinPrice")
+
             if price is None:
                 continue
 
@@ -322,37 +401,51 @@ def command_help():
 
 def command_market():
     prices = get_market_prices()
+    previous = get_previous_prices("market")
+    update_today_prices("market", prices)
+
+    def p(name):
+        return format_gold_with_diff(prices.get(name), previous.get(name))
 
     return f"""📦 주요 재료 시세
 
-운명의 파괴석: {format_gold(prices.get("운명의 파괴석"))}
-운명의 파괴석 결정: {format_gold(prices.get("운명의 파괴석 결정"))}
+운명의 파괴석: {p("운명의 파괴석")}
+운명의 파괴석 결정: {p("운명의 파괴석 결정")}
 
-운명의 수호석: {format_gold(prices.get("운명의 수호석"))}
-운명의 수호석 결정: {format_gold(prices.get("운명의 수호석 결정"))}
+운명의 수호석: {p("운명의 수호석")}
+운명의 수호석 결정: {p("운명의 수호석 결정")}
 
-운명의 돌파석: {format_gold(prices.get("운명의 돌파석"))}
-위대한 운명의 돌파석: {format_gold(prices.get("위대한 운명의 돌파석"))}
+운명의 돌파석: {p("운명의 돌파석")}
+위대한 운명의 돌파석: {p("위대한 운명의 돌파석")}
 
-아비도스 융화 재료: {format_gold(prices.get("아비도스 융화 재료"))}
-상급 아비도스 융화 재료: {format_gold(prices.get("상급 아비도스 융화 재료"))}
+아비도스 융화 재료: {p("아비도스 융화 재료")}
+상급 아비도스 융화 재료: {p("상급 아비도스 융화 재료")}
 
-명예의 파편: {format_gold(prices.get("명예의 파편 주머니(소)"))}(소) / {format_gold(prices.get("명예의 파편 주머니(중)"))}(중) / {format_gold(prices.get("명예의 파편 주머니(대)"))}(대)
-운명의 파편: {format_gold(prices.get("운명의 파편 주머니(소)"))}(소) / {format_gold(prices.get("운명의 파편 주머니(중)"))}(중) / {format_gold(prices.get("운명의 파편 주머니(대)"))}(대)
+명예의 파편: {p("명예의 파편 주머니(소)")}(소) / {p("명예의 파편 주머니(중)")}(중) / {p("명예의 파편 주머니(대)")}(대)
+운명의 파편: {p("운명의 파편 주머니(소)")}(소) / {p("운명의 파편 주머니(중)")}(중) / {p("운명의 파편 주머니(대)")}(대)
 
-용암의 숨결: {format_gold(prices.get("용암의 숨결"))}
-빙하의 숨결: {format_gold(prices.get("빙하의 숨결"))}
+용암의 숨결: {p("용암의 숨결")}
+빙하의 숨결: {p("빙하의 숨결")}
 
-에스더의 기운: {format_gold(prices.get("에스더의 기운"))}"""
+에스더의 기운: {p("에스더의 기운")}"""
 
 
 def command_engraving():
     items = get_engraving_prices()
 
+    current_prices = {
+        item["name"]: item["price"]
+        for item in items
+    }
+
+    previous = get_previous_prices("engraving")
+    update_today_prices("engraving", current_prices)
+
     lines = ["📘 유각 시세", ""]
 
     for item in items:
-        lines.append(f"{item['name']}: {format_gold(item['price'])}")
+        name = item["name"]
+        lines.append(f"{name}: {format_gold_with_diff(item['price'], previous.get(name))}")
 
     return "\n".join(lines)
 
@@ -369,7 +462,6 @@ def command_auction(msg: str):
         return "거래소 시세를 입력해주세요.\n예: .경매 165000 또는 /경매 165000"
 
     price = int(raw)
-
     receive = price * 0.95
 
     four_break = int(receive * 3 / 4)
@@ -495,10 +587,19 @@ def chat(req: ChatRequest):
     if msg == "/보석":
         data = gems()
 
+        current_prices = {
+            item["name"]: item["price"]
+            for item in data["items"]
+        }
+
+        previous = get_previous_prices("gems")
+        update_today_prices("gems", current_prices)
+
         lines = ["💎 보석 최저 즉시구매가"]
 
         for item in data["items"]:
-            lines.append(f"{item['name']}: {format_gold(item['price'])}")
+            name = item["name"]
+            lines.append(f"{name}: {format_gold_with_diff(item['price'], previous.get(name))}")
 
         return {"reply": "\n".join(lines)}
 
